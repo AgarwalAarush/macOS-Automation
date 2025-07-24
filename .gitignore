@@ -4,3 +4,5 @@
 *.jpeg
 *.jpg
 *.txt
+
+.DS_Store

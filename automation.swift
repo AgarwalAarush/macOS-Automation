@@ -44,7 +44,7 @@ struct GridBounds {
 class LLMAPIClient {
     
     /// Send a request to OpenAI API
-    static func sendRequest(messages: [[String: Any]], model: String = "gpt-4.1-2025-04-14", temperature: Double = 0.7) -> String {
+    static func sendRequest(messages: [[String: Any]], model: String = "gpt-4.1-mini-2025-04-14", temperature: Double = 0.7) -> String {
         let url = URL(string: "https://api.openai.com/v1/chat/completions")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -416,111 +416,129 @@ class LLMClient {
         target: String, 
         iterations: Int = 3, 
         gridWidth: Int = 2,
-        paddingFactor: CGFloat = 1.0,
-        useEnhancedFromIteration: Int = 1
+        paddingFactor: CGFloat = 1.0
     ) -> CGPoint? {
-        var currentTopLeft = topLeft
-        var currentBottomRight = bottomRight
+        
+        // PHASE 1: INITIALIZATION
+        print("🚀 Phase 1: Initialization")
+        
+        // Starting inputs and state tracking
+        let initialCroppedBounds = CGRect(x: topLeft.x, y: topLeft.y, width: bottomRight.x - topLeft.x, height: bottomRight.y - topLeft.y)
+        var imageCoordinateHistory: [CGRect] = []
+        var gridOverlayHistory: [CGRect] = []
+        var currentImageBounds = initialCroppedBounds
+        
+        print("📍 Initial region: (\(topLeft.x), \(topLeft.y)) to (\(bottomRight.x), \(bottomRight.y))")
+        print("🔧 Parameters: iterations=\(iterations), gridWidth=\(gridWidth), paddingFactor=\(paddingFactor)")
+        
+        // PHASE 2: ITERATIVE REFINEMENT LOOP
+        print("\n🔄 Phase 2: Iterative Refinement Loop")
+        
+        var currentImagePath = Config.screenshotPath  // Start with original screenshot
+        var currentCropBounds = CGRect(x: 0, y: 0, width: 3216, height: 2080)  // Assume full screenshot bounds
         
         for iteration in 0..<iterations {
-            print("-------------------------------------")
-            let croppedImagePath = "enhanced_cropped_\(iteration).png"
+            print("\n--- 🔍 Iteration \(iteration + 1)/\(iterations) ---")
+            
             let quadrantOverlayPath = "enhanced_quadrant_\(iteration).png"
             
             do {
-                if iteration < useEnhancedFromIteration {
-                    // First iteration: Use regular grid overlay over the entire screen/region
-                    print("✂️ Standard Iteration \(iteration): Using full region (\(currentTopLeft.x), \(currentTopLeft.y)) to (\(currentBottomRight.x), \(currentBottomRight.y))")
+                // Grid Overlay Application
+                print("📸 Applying enhanced grid overlay to current image: \(currentImagePath)")
+                
+                // Always use enhanced grid overlay with boundary visualization
+                // For iteration 0, the boundary covers the entire image so it won't be visible
+                try QuadrantManager.drawEnhancedGridOverlay(
+                    inputPath: currentImagePath,
+                    outputPath: quadrantOverlayPath,
+                    gridWidth: gridWidth,
+                    originalTargetBounds: currentImageBounds,
+                    actualCropBounds: currentCropBounds
+                )
+                
+                // LLM Region Selection
+                print("🧠 Sending grid-overlaid image to LLM for region selection...")
+                let selectedGridCell = analyzeGridChoice(imagePath: quadrantOverlayPath, target: target, gridWidth: gridWidth)
+                print("✅ LLM selected grid cell: \(selectedGridCell)")
+                
+                // Coordinate Calculation - Always use enhanced coordinate mapping
+                print("🔄 Calculating new bounds from grid selection...")
+                
+                guard let newBounds = QuadrantManager.calculateEnhancedGridCellBoundsFromCrop(
+                    originalTargetBounds: currentImageBounds,
+                    actualCropBounds: currentCropBounds,
+                    gridWidth: gridWidth,
+                    cellNumber: selectedGridCell
+                ) else {
+                    print("❌ Failed to calculate bounds for cell \(selectedGridCell)")
+                    return nil
+                }
+                
+                // Update current target region to the selected box coordinates
+                currentImageBounds = CGRect(
+                    x: newBounds.topLeft.x, 
+                    y: newBounds.topLeft.y, 
+                    width: newBounds.bottomRight.x - newBounds.topLeft.x, 
+                    height: newBounds.bottomRight.y - newBounds.topLeft.y
+                )
+                
+                print("📏 New target region: (\(currentImageBounds.minX), \(currentImageBounds.minY)) to (\(currentImageBounds.maxX), \(currentImageBounds.maxY))")
+                
+                // Image Cropping & State Update (prepare for next iteration)
+                if iteration < iterations - 1 {  // Don't crop after the last iteration
+                    print("✂️ Cropping image for next iteration with boundary-aware padding...")
                     
-                    // Crop to current region (no padding for first iteration)
-                    try ImageProcessor.cropImage(
-                        inputPath: Config.screenshotPath,
-                        outputPath: croppedImagePath,
-                        centerPoint: CGPoint(x: (currentTopLeft.x + currentBottomRight.x) / 2, y: (currentTopLeft.y + currentBottomRight.y) / 2),
-                        cropSize: Int(max(currentBottomRight.x - currentTopLeft.x, currentBottomRight.y - currentTopLeft.y))
-                    )
+                    let nextCroppedImagePath = "enhanced_cropped_\(iteration).png"
                     
-                    // Create regular grid overlay
-                    print("🔢 Creating standard \(gridWidth)x\(gridWidth) grid overlay for iteration \(iteration)...")
-                    try QuadrantManager.drawGridOverlay(
-                        inputPath: croppedImagePath,
-                        outputPath: quadrantOverlayPath,
-                        gridWidth: gridWidth
-                    )
-                    
-                    print("🧠 Analyzing standard grid choice for iteration \(iteration)...")
-                    let gridChoice = analyzeGridChoice(imagePath: quadrantOverlayPath, target: target, gridWidth: gridWidth)
-                    print("✅ Standard Iteration \(iteration): Model chose grid cell \(gridChoice)")
-                    
-                    // Calculate new bounds using standard coordinate mapping
-                    guard let newBounds = QuadrantManager.calculateGridCellBounds(
-                        topLeft: currentTopLeft,
-                        bottomRight: currentBottomRight,
-                        gridWidth: gridWidth,
-                        cellNumber: gridChoice
-                    ) else {
-                        print("❌ Failed to calculate standard bounds for cell \(gridChoice)")
-                        return nil
-                    }
-                    
-                    currentTopLeft = newBounds.topLeft
-                    currentBottomRight = newBounds.bottomRight
-                    
-                } else {
-                    // Enhanced iterations: Use padding and contextual grid
-                    print("✂️ Enhanced Iteration \(iteration): Cropping with padding around region (\(currentTopLeft.x), \(currentTopLeft.y)) to (\(currentBottomRight.x), \(currentBottomRight.y))")
-                    
+                    // Apply padding with boundary checking and crop original screenshot
                     let actualCropBounds = try ImageProcessor.cropImageWithPadding(
-                        inputPath: Config.screenshotPath,
-                        outputPath: croppedImagePath,
-                        targetTopLeft: currentTopLeft,
-                        targetBottomRight: currentBottomRight,
+                        inputPath: Config.screenshotPath,  // Always crop from original for coordinate consistency
+                        outputPath: nextCroppedImagePath,
+                        targetTopLeft: CGPoint(x: currentImageBounds.minX, y: currentImageBounds.minY),
+                        targetBottomRight: CGPoint(x: currentImageBounds.maxX, y: currentImageBounds.maxY),
                         paddingFactor: paddingFactor
                     )
                     
-                    // Create enhanced grid overlay with boundary box
-                    print("🔢 Creating enhanced \(gridWidth)x\(gridWidth) grid overlay for iteration \(iteration)...")
-                    try QuadrantManager.drawEnhancedGridOverlay(
-                        inputPath: croppedImagePath,
-                        outputPath: quadrantOverlayPath,
-                        gridWidth: gridWidth,
-                        originalTargetBounds: CGRect(x: currentTopLeft.x, y: currentTopLeft.y, width: currentBottomRight.x - currentTopLeft.x, height: currentBottomRight.y - currentTopLeft.y),
-                        actualCropBounds: actualCropBounds
-                    )
+                    // Update state for next iteration
+                    currentImagePath = nextCroppedImagePath
+                    currentCropBounds = actualCropBounds
                     
-                    print("🧠 Analyzing enhanced grid choice for iteration \(iteration)...")
-                    let gridChoice = analyzeGridChoice(imagePath: quadrantOverlayPath, target: target, gridWidth: gridWidth)
-                    print("✅ Enhanced Iteration \(iteration): Model chose grid cell \(gridChoice)")
-                    
-                    // Calculate new bounds using enhanced coordinate mapping with actual crop bounds
-                    guard let newBounds = QuadrantManager.calculateEnhancedGridCellBoundsFromCrop(
-                        originalTargetBounds: CGRect(x: currentTopLeft.x, y: currentTopLeft.y, width: currentBottomRight.x - currentTopLeft.x, height: currentBottomRight.y - currentTopLeft.y),
-                        actualCropBounds: actualCropBounds,
-                        gridWidth: gridWidth,
-                        cellNumber: gridChoice
-                    ) else {
-                        print("❌ Failed to calculate enhanced bounds for cell \(gridChoice)")
-                        return nil
-                    }
-                    
-                    currentTopLeft = newBounds.topLeft
-                    currentBottomRight = newBounds.bottomRight
+                    print("📦 Cropped image with padding: (\(actualCropBounds.minX), \(actualCropBounds.minY)) to (\(actualCropBounds.maxX), \(actualCropBounds.maxY))")
                 }
                 
-                print("📏 Next iteration bounds: (\(currentTopLeft.x), \(currentTopLeft.y)) to (\(currentBottomRight.x), \(currentBottomRight.y))")
+                // Track coordinate history for final mapping
+                imageCoordinateHistory.append(currentImageBounds)
+                gridOverlayHistory.append(currentCropBounds)
                 
             } catch {
-                print("❌ Error in enhanced iterative analysis iteration \(iteration): \(error)")
+                print("❌ Error in iteration \(iteration): \(error)")
                 return nil
             }
-            print("-------------------------------------")
         }
         
-        // Return center of final region
-        let centerX = (currentTopLeft.x + currentBottomRight.x) / 2
-        let centerY = (currentTopLeft.y + currentBottomRight.y) / 2
-        print("🎯 Enhanced analysis complete, returning center: (\(centerX), \(centerY))")
-        return CGPoint(x: centerX, y: centerY)
+        // PHASE 3: FINAL COORDINATE RESOLUTION
+        print("\n📍 Phase 3: Final Coordinate Resolution")
+        
+        // Grid-to-Image Mapping: Final grid selection already converted to image coordinates above
+        let finalImageCoordinates = currentImageBounds
+        print("🎯 Final image coordinates: (\(finalImageCoordinates.minX), \(finalImageCoordinates.minY)) to (\(finalImageCoordinates.maxX), \(finalImageCoordinates.maxY))")
+        
+        // Image-to-Screenshot Mapping: Coordinates are already relative to original screenshot
+        // (This is maintained throughout our coordinate tracking)
+        
+        // Screenshot-to-Screen Mapping: Calculate final screen coordinates
+        let centerX = (finalImageCoordinates.minX + finalImageCoordinates.maxX) / 2
+        let centerY = (finalImageCoordinates.minY + finalImageCoordinates.maxY) / 2
+        
+        // Account for 30x30 padding in initial screenshot capture
+        let finalScreenX = centerX + 30
+        let finalScreenY = centerY + 30
+        
+        let finalCoordinates = CGPoint(x: finalScreenX, y: finalScreenY)
+        print("🎯 Final screen coordinates (with 30x30 offset): (\(finalCoordinates.x), \(finalCoordinates.y))")
+        print("✅ Enhanced iterative analysis complete!")
+        
+        return finalCoordinates
     }
     
 }
@@ -609,6 +627,71 @@ class ImageProcessor {
         print("✅ Cropped image saved to \(outputPath)")
     }
     
+    /// Remove pixels from edges of an image with individual control per edge
+    static func removeEdgePixels(inputPath: String, outputPath: String, top: Int = 0, bottom: Int = 0, left: Int = 0, right: Int = 0) throws {
+        guard let srcImage = NSImage(contentsOfFile: inputPath) else {
+            throw NSError(domain: "ImageError", code: 9,
+                         userInfo: [NSLocalizedDescriptionKey: "Could not load image at \(inputPath)"])
+        }
+
+        guard let cg = srcImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            throw NSError(domain: "ImageError", code: 10,
+                         userInfo: [NSLocalizedDescriptionKey: "Could not get CGImage from NSImage"])
+        }
+
+        let originalWidth = CGFloat(cg.width)
+        let originalHeight = CGFloat(cg.height)
+        
+        let topFloat = CGFloat(top)
+        let bottomFloat = CGFloat(bottom)
+        let leftFloat = CGFloat(left)
+        let rightFloat = CGFloat(right)
+        
+        // Calculate new dimensions by removing pixels from specified edges
+        let newWidth = originalWidth - leftFloat - rightFloat
+        let newHeight = originalHeight - topFloat - bottomFloat
+        
+        // Validate that we're not removing more pixels than the image has
+        guard newWidth > 0 && newHeight > 0 else {
+            throw NSError(domain: "ImageError", code: 13,
+                         userInfo: [NSLocalizedDescriptionKey: "Cannot remove more pixels than image dimensions allow"])
+        }
+        
+        // Create crop rectangle that removes pixels from specified edges
+        // In Core Graphics coordinates, Y=0 is at bottom, so we start from bottom edge
+        let cropRect = CGRect(
+            x: leftFloat,
+            y: bottomFloat, 
+            width: newWidth,
+            height: newHeight
+        )
+
+        guard let croppedCG = cg.cropping(to: cropRect) else {
+            throw NSError(domain: "ImageError", code: 11,
+                         userInfo: [NSLocalizedDescriptionKey: "Edge pixel removal failed"])
+        }
+
+        let croppedImage = NSImage(cgImage: croppedCG, size: CGSize(width: newWidth, height: newHeight))
+
+        guard let tiffData = croppedImage.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiffData),
+              let pngData = bitmap.representation(using: .png, properties: [:]) else {
+            throw NSError(domain: "ImageError", code: 12,
+                         userInfo: [NSLocalizedDescriptionKey: "Failed to encode edge-processed image as PNG"])
+        }
+
+        try pngData.write(to: URL(fileURLWithPath: outputPath))
+        print("✅ Removed pixels from edges: top=\(top), bottom=\(bottom), left=\(left), right=\(right)")
+        print("📐 Original: \(originalWidth) x \(originalHeight) → New: \(newWidth) x \(newHeight)")
+    }
+    
+    /// Convenience method to remove the same number of pixels from all edges
+    static func removeEdgePixels(inputPath: String, outputPath: String, pixelsToRemove: Int) throws {
+        try removeEdgePixels(inputPath: inputPath, outputPath: outputPath, 
+                           top: pixelsToRemove, bottom: pixelsToRemove, 
+                           left: pixelsToRemove, right: pixelsToRemove)
+    }
+    
     /// Crop image with padding around target region for enhanced context
     static func cropImageWithPadding(inputPath: String, outputPath: String, targetTopLeft: CGPoint, targetBottomRight: CGPoint, paddingFactor: CGFloat = 2.0) throws -> CGRect {
         guard let srcImage = NSImage(contentsOfFile: inputPath) else {
@@ -691,10 +774,10 @@ class ImageProcessor {
             height: actualBottom - actualTop
         )
         
-        print("🔍 Edge handling:")
-        print("   Ideal bounds: (\(idealLeft), \(idealTop)) to (\(idealRight), \(idealBottom))")
-        print("   Actual bounds: (\(actualLeft), \(actualTop)) to (\(actualRight), \(actualBottom))")
-        print("   Final crop: (\(finalCropRect.origin.x), \(finalCropRect.origin.y)) size (\(finalCropRect.width), \(finalCropRect.height))")
+        print("🛡️ Boundary-aware padding calculation:")
+        print("   📐 Desired padded bounds: (\(idealLeft), \(idealTop)) to (\(idealRight), \(idealBottom))")
+        print("   🚧 Constrained to screenshot: (\(actualLeft), \(actualTop)) to (\(actualRight), \(actualBottom))")
+        print("   ✂️ Final crop region: origin(\(finalCropRect.origin.x), \(finalCropRect.origin.y)) size(\(finalCropRect.width) x \(finalCropRect.height))")
 
         guard let croppedCG = cg.cropping(to: finalCropRect) else {
             throw NSError(domain: "ImageError", code: 7,
@@ -1020,7 +1103,7 @@ class QuadrantManager {
         let row = (cellNumber - 1) / gridWidth
         let col = (cellNumber - 1) % gridWidth
         
-        print("🔍 Cell \(cellNumber) maps to row \(row), col \(col) in \(gridWidth)x\(gridWidth) grid")
+        print("🎯 LLM selected cell \(cellNumber) → grid position [row \(row), col \(col)] in \(gridWidth)x\(gridWidth) grid")
         
         let newTopLeft = CGPoint(
             x: topLeft.x + CGFloat(col) * cellWidth,
@@ -1032,7 +1115,7 @@ class QuadrantManager {
             y: topLeft.y + CGFloat(row + 1) * cellHeight
         )
         
-        print("🔍 Calculated bounds: (\(newTopLeft.x), \(newTopLeft.y)) to (\(newBottomRight.x), \(newBottomRight.y))")
+        print("✅ Calculated new target region: (\(newTopLeft.x), \(newTopLeft.y)) to (\(newBottomRight.x), \(newBottomRight.y))")
         
         return GridBounds(topLeft: newTopLeft, bottomRight: newBottomRight)
     }
@@ -1069,11 +1152,12 @@ class QuadrantManager {
         
         // Position grid area exactly where the original target appears within the crop
         let gridAreaX = originalTargetBounds.origin.x - actualCropBounds.origin.x
-        let gridAreaY = originalTargetBounds.origin.y - actualCropBounds.origin.y
+        // Convert from image coordinates (Y=0 at top) to Core Graphics coordinates (Y=0 at bottom)
+        let gridAreaY = CGFloat(height) - (originalTargetBounds.origin.y - actualCropBounds.origin.y) - gridAreaHeight
         
-        print("🔍 Grid positioning: (\(gridAreaX), \(gridAreaY)) size (\(gridAreaWidth), \(gridAreaHeight))")
-        print("🔍 Original target: (\(originalTargetBounds.origin.x), \(originalTargetBounds.origin.y)) size (\(originalTargetBounds.width), \(originalTargetBounds.height))")
-        print("🔍 Actual crop: (\(actualCropBounds.origin.x), \(actualCropBounds.origin.y)) size (\(actualCropBounds.width), \(actualCropBounds.height))")
+        print("📍 Target region in screenshot coords: origin(\(originalTargetBounds.origin.x), \(originalTargetBounds.origin.y)) size(\(originalTargetBounds.width) x \(originalTargetBounds.height))")
+        print("📦 Cropped image bounds in screenshot coords: origin(\(actualCropBounds.origin.x), \(actualCropBounds.origin.y)) size(\(actualCropBounds.width) x \(actualCropBounds.height))")
+        print("🎯 Target position within cropped image: (\(gridAreaX), \(gridAreaY)) size(\(gridAreaWidth) x \(gridAreaHeight))")
         
         let gridAreaRect = CGRect(x: gridAreaX, y: gridAreaY, width: gridAreaWidth, height: gridAreaHeight)
         
@@ -1120,7 +1204,7 @@ class QuadrantManager {
             for col in 0..<gridWidth {
                 let cellNumber = row * gridWidth + col + 1
                 let centerX = gridAreaX + (CGFloat(col) + 0.5) * cellWidth
-                // Flip the Y coordinate so cell 1 appears at top-left
+                // In Core Graphics coordinates (Y=0 at bottom), flip row order so cell 1 appears at top-left
                 let centerY = gridAreaY + (CGFloat(gridWidth - 1 - row) + 0.5) * cellHeight
                 
                 let label = "\(cellNumber)" as NSString
@@ -1201,8 +1285,8 @@ class QuadrantManager {
         let row = (cellNumber - 1) / gridWidth
         let col = (cellNumber - 1) % gridWidth
         
-        print("🔍 Enhanced cell \(cellNumber) maps to row \(row), col \(col) in \(gridWidth)x\(gridWidth) grid")
-        print("🔍 Grid area in screen coords: (\(gridAreaLeft), \(gridAreaTop)) size (\(gridAreaWidth), \(gridAreaHeight))")
+        print("🎯 LLM selected cell \(cellNumber) → grid position [row \(row), col \(col)] in \(gridWidth)x\(gridWidth) grid")
+        print("📏 Grid area bounds in screenshot coords: (\(gridAreaLeft), \(gridAreaTop)) to (\(gridAreaLeft + gridAreaWidth), \(gridAreaTop + gridAreaHeight))")
         
         // Calculate new bounds within the grid area (in screen coordinates)
         let newTopLeft = CGPoint(
@@ -1215,7 +1299,7 @@ class QuadrantManager {
             y: gridAreaTop + CGFloat(row + 1) * cellHeight
         )
         
-        print("🔍 Enhanced calculated bounds: (\(newTopLeft.x), \(newTopLeft.y)) to (\(newBottomRight.x), \(newBottomRight.y))")
+        print("✅ Calculated new target region: (\(newTopLeft.x), \(newTopLeft.y)) to (\(newBottomRight.x), \(newBottomRight.y))")
         
         return GridBounds(topLeft: newTopLeft, bottomRight: newBottomRight)
     }
@@ -1246,8 +1330,8 @@ class QuadrantManager {
         let row = (cellNumber - 1) / gridWidth
         let col = (cellNumber - 1) % gridWidth
         
-        print("🔍 Enhanced cell \(cellNumber) maps to row \(row), col \(col) in \(gridWidth)x\(gridWidth) grid")
-        print("🔍 Grid area in screen coords: (\(gridAreaLeft), \(gridAreaTop)) size (\(gridAreaWidth), \(gridAreaHeight))")
+        print("🎯 LLM selected cell \(cellNumber) → grid position [row \(row), col \(col)] in \(gridWidth)x\(gridWidth) grid")
+        print("📏 Grid area bounds in screenshot coords: (\(gridAreaLeft), \(gridAreaTop)) to (\(gridAreaLeft + gridAreaWidth), \(gridAreaTop + gridAreaHeight))")
         
         // Calculate new bounds within the grid area (in screen coordinates)
         let newTopLeft = CGPoint(
@@ -1260,7 +1344,7 @@ class QuadrantManager {
             y: gridAreaTop + CGFloat(row + 1) * cellHeight
         )
         
-        print("🔍 Enhanced calculated bounds: (\(newTopLeft.x), \(newTopLeft.y)) to (\(newBottomRight.x), \(newBottomRight.y))")
+        print("✅ Calculated new target region: (\(newTopLeft.x), \(newTopLeft.y)) to (\(newBottomRight.x), \(newBottomRight.y))")
         
         return GridBounds(topLeft: newTopLeft, bottomRight: newBottomRight)
     }
@@ -1565,7 +1649,18 @@ class UIAutomationOrchestrator {
             print("📸 Taking full screenshot...")
             try ScreenshotManager.captureAppWindow(appName: appName, outputPath: Config.screenshotPath)
             
-            // Get image dimensions for initial bounds
+            // Apply edge pixel removal transformation
+            print("✂️ Applying edge pixel removal transformation...")
+            try ImageProcessor.removeEdgePixels(
+                inputPath: Config.screenshotPath,
+                outputPath: Config.screenshotPath, // Overwrite the original
+                top: 150,
+                bottom: 80, 
+                left: 120,
+                right: 120
+            )
+            
+            // Get image dimensions for initial bounds (after transformation)
             guard let image = NSImage(contentsOfFile: Config.screenshotPath) else {
                 print("❌ Failed to load screenshot")
                 return
@@ -1583,9 +1678,8 @@ class UIAutomationOrchestrator {
                 bottomRight: bottomRight,
                 target: target,
                 iterations: 3,
-                gridWidth: 2,
-                paddingFactor: 2.0,
-                useEnhancedFromIteration: 1
+                gridWidth: 4,
+                paddingFactor: 2.0
             ) else {
                 print("❌ Failed to determine click coordinates through enhanced analysis")
                 return
@@ -1781,7 +1875,7 @@ func main() {
     let task = "enter 'What is a CNN?\n' into Claude" // Example task, replace with actual input
     print("🔍 Analyzing task: \(task)")
     UIAutomationOrchestrator.executeTask(task)
-    // _ = AutomationManager.activateApp(named: "Claude")
+    
 }
 
 // MARK: - Entry Point
