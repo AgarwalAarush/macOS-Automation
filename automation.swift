@@ -179,7 +179,8 @@ class LLMClient {
         </available_tools>
         
         <instructions>
-        1. Break down the task into a sequence of tool calls
+        1. Break down the task into a sequence of tool calls. Think from the perspective 
+        of a user. What series of steps would the user make to accomplish this task?
         2. For each tool call, specify the tool name and required parameters
         3. Use descriptive targets for UI elements (e.g., "search input field", "submit button")
         4. Return a JSON array of tool calls in the exact format shown below
@@ -284,8 +285,9 @@ class LLMClient {
 
         <instructions>
         1. Locate your target: the \(target) in this cropped image
-        2. Determine which red-numbered section it primarily occupies
-        3. Look for the exact clickable area or center of the input field
+        2. You are a user. When interacting with the \(target), which
+        red-numbered section would you click in to interact with it?
+        3. Look for the exact clickable area
         4. This is a detailed view, so be precise about the location
         </instructions>
 
@@ -1053,7 +1055,7 @@ class UIAutomationOrchestrator {
                 bottomRight: bottomRight,
                 target: target,
                 iterations: 3,
-                gridWidth: 3
+                gridWidth: 4
             ) else {
                 print("❌ Failed to determine click coordinates through iterative analysis")
                 return
@@ -1068,10 +1070,18 @@ class UIAutomationOrchestrator {
                 return
             }
             
-            // Adjust coordinates to account for window position
+            // Calculate scaling factors for each dimension
+            let scaleX = image.size.width / windowBounds.width  // e.g., 3024 / 1511 ≈ 2.0
+            let scaleY = image.size.height / windowBounds.height // e.g., 1964 / 981 ≈ 2.0
+            
+            print("📐 Image size: \(image.size.width) × \(image.size.height)")
+            print("📐 Window size: \(windowBounds.width) × \(windowBounds.height)")
+            print("📐 Scale factors: X=\(scaleX), Y=\(scaleY)")
+            
+            // Adjust coordinates: scale down by dimension-specific factors, then add window offset
             let finalClickPoint = CGPoint(
-                x: windowBounds.origin.x + relativeClickPoint.x,
-                y: windowBounds.origin.y + relativeClickPoint.y
+                x: windowBounds.origin.x + (relativeClickPoint.x / scaleX),
+                y: windowBounds.origin.y + (relativeClickPoint.y / scaleY)
             )
             
             print("🎯 Final adjusted click coordinates: (\(finalClickPoint.x), \(finalClickPoint.y))")
@@ -1238,7 +1248,7 @@ func main() {
     
     // let task = args[1]
 
-    let task = "enter '1+1=?\n' into ChatGPT" // Example task, replace with actual input
+    let task = "enter '1+1=?\n' into Claude" // Example task, replace with actual input
     print("🔍 Analyzing task: \(task)")
     UIAutomationOrchestrator.executeTask(task)
     // _ = AutomationManager.activateApp(named: "Claude")
