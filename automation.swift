@@ -35,6 +35,11 @@ struct QuadrantResult {
     let centerPoint: CGPoint
 }
 
+struct GridBounds {
+    let topLeft: CGPoint
+    let bottomRight: CGPoint
+}
+
 // MARK: - LLM API Client
 class LLMAPIClient {
     
@@ -302,102 +307,104 @@ class LLMClient {
         return QuadrantResult(quadrantNumber: sectionNum, centerPoint: centerPoint)
     }
     
-    /// Recursive quadrant analysis with 3 iterations
-    static func recursiveQuadrantAnalysis(topLeft: CGPoint, bottomRight: CGPoint, target: String, iteration: Int = 0) -> CGPoint? {
-        if iteration >= 4 {
-            let centerX = (topLeft.x + bottomRight.x) / 2
-            let centerY = (topLeft.y + bottomRight.y) / 2
-            print("🎯 Reached final iteration, returning center: (\(centerX), \(centerY))")
-            return CGPoint(x: centerX, y: centerY)
-        }
+    /// Iterative quadrant analysis with configurable iterations and grid size
+    static func iterativeQuadrantAnalysis(topLeft: CGPoint, bottomRight: CGPoint, target: String, iterations: Int = 4, gridWidth: Int = 2) -> CGPoint? {
+        var currentTopLeft = topLeft
+        var currentBottomRight = bottomRight
         
-        let width = bottomRight.x - topLeft.x
-        let height = bottomRight.y - topLeft.y
-        
-        let midX = topLeft.x + width / 2
-        let midY = topLeft.y + height / 2
-        
-        let croppedImagePath = "recursive_cropped_\(iteration).png"
-        let quadrantOverlayPath = "recursive_quadrant_\(iteration).png"
-        
-        do {
-            // Crop the screenshot to the current region
-            print("✂️ Iteration \(iteration): Cropping region (\(topLeft.x), \(topLeft.y)) to (\(bottomRight.x), \(bottomRight.y))")
-            try ImageProcessor.cropImage(
-                inputPath: Config.screenshotPath,
-                outputPath: croppedImagePath,
-                centerPoint: CGPoint(x: (topLeft.x + bottomRight.x) / 2, y: (topLeft.y + bottomRight.y) / 2),
-                cropSize: Int(max(width, height))
-            )
+        for iteration in 0..<iterations {
+            let width = currentBottomRight.x - currentTopLeft.x
+            let height = currentBottomRight.y - currentTopLeft.y
             
-            // Create simple 4-quadrant overlay on the cropped image
-            print("🔢 Creating 4-quadrant overlay for iteration \(iteration)...")
-            try QuadrantManager.drawQuadrantRectangle(
-                inputPath: croppedImagePath,
-                outputPath: quadrantOverlayPath
-            )
+            let croppedImagePath = "iterative_cropped_\(iteration).png"
+            let quadrantOverlayPath = "iterative_quadrant_\(iteration).png"
             
-            print("🧠 Analyzing quadrant choice for iteration \(iteration)...")
-            let quadrantChoice = analyzeQuadrantChoice(imagePath: quadrantOverlayPath, target: target)
-            print("✅ Iteration \(iteration): Model chose quadrant \(quadrantChoice)")
-            
-            var newTopLeft: CGPoint
-            var newBottomRight: CGPoint
-            
-            switch quadrantChoice {
-            case 1: // Top-left
-                newTopLeft = CGPoint(x: topLeft.x, y: topLeft.y)
-                newBottomRight = CGPoint(x: midX, y: midY)
-            case 2: // Top-right
-                newTopLeft = CGPoint(x: midX, y: topLeft.y)
-                newBottomRight = CGPoint(x: bottomRight.x, y: midY)
-            case 3: // Bottom-left
-                newTopLeft = CGPoint(x: topLeft.x, y: midY)
-                newBottomRight = CGPoint(x: midX, y: bottomRight.y)
-            case 4: // Bottom-right
-                newTopLeft = CGPoint(x: midX, y: midY)
-                newBottomRight = CGPoint(x: bottomRight.x, y: bottomRight.y)
-            default:
-                print("❌ Invalid quadrant choice: \(quadrantChoice)")
+            do {
+                // Crop the screenshot to the current region
+                print("✂️ Iteration \(iteration): Cropping region (\(currentTopLeft.x), \(currentTopLeft.y)) to (\(currentBottomRight.x), \(currentBottomRight.y))")
+                try ImageProcessor.cropImage(
+                    inputPath: Config.screenshotPath,
+                    outputPath: croppedImagePath,
+                    centerPoint: CGPoint(x: (currentTopLeft.x + currentBottomRight.x) / 2, y: (currentTopLeft.y + currentBottomRight.y) / 2),
+                    cropSize: Int(max(width, height))
+                )
+                
+                // Create grid overlay on the cropped image
+                print("🔢 Creating \(gridWidth)x\(gridWidth) grid overlay for iteration \(iteration)...")
+                try QuadrantManager.drawGridOverlay(
+                    inputPath: croppedImagePath,
+                    outputPath: quadrantOverlayPath,
+                    gridWidth: gridWidth
+                )
+                
+                print("🧠 Analyzing grid choice for iteration \(iteration)...")
+                let gridChoice = analyzeGridChoice(imagePath: quadrantOverlayPath, target: target, gridWidth: gridWidth)
+                print("✅ Iteration \(iteration): Model chose grid cell \(gridChoice)")
+                
+                // Calculate new bounds based on grid choice
+                guard let newBounds = QuadrantManager.calculateGridCellBounds(
+                    topLeft: currentTopLeft,
+                    bottomRight: currentBottomRight,
+                    gridWidth: gridWidth,
+                    cellNumber: gridChoice
+                ) else {
+                    print("❌ Failed to calculate new bounds for cell \(gridChoice)")
+                    return nil
+                }
+                
+                currentTopLeft = newBounds.topLeft
+                currentBottomRight = newBounds.bottomRight
+                
+                print("📏 Next iteration bounds: (\(currentTopLeft.x), \(currentTopLeft.y)) to (\(currentBottomRight.x), \(currentBottomRight.y))")
+                
+            } catch {
+                print("❌ Error in iterative quadrant analysis iteration \(iteration): \(error)")
                 return nil
             }
-            
-            print("📏 Next iteration bounds: (\(newTopLeft.x), \(newTopLeft.y)) to (\(newBottomRight.x), \(newBottomRight.y))")
-            
-            return recursiveQuadrantAnalysis(
-                topLeft: newTopLeft,
-                bottomRight: newBottomRight,
-                target: target,
-                iteration: iteration + 1
-            )
-            
-        } catch {
-            print("❌ Error in recursive quadrant analysis iteration \(iteration): \(error)")
-            return nil
         }
+        
+        // Return center of final region
+        let centerX = (currentTopLeft.x + currentBottomRight.x) / 2
+        let centerY = (currentTopLeft.y + currentBottomRight.y) / 2
+        print("🎯 Final iteration complete, returning center: (\(centerX), \(centerY))")
+        return CGPoint(x: centerX, y: centerY)
     }
     
-    /// Analyze which quadrant (1-4) contains the target
-    static func analyzeQuadrantChoice(imagePath: String, target: String) -> Int {
-        let quadrantInput = """
+    /// Analyze which grid cell contains the target
+    static func analyzeGridChoice(imagePath: String, target: String, gridWidth: Int) -> Int {
+        let gridInput = """
         <task>
-        Look at this image with 4 numbered quadrants (1-4). Identify which quadrant contains the \(target).
+        Look at this image with a \(gridWidth)x\(gridWidth) grid of numbered cells. Identify which cell contains the \(target).
         </task>
 
         <instructions>
-        1. The image shows a rectangle divided into 4 quadrants labeled 1, 2, 3, 4
-        2. Quadrant 1 is top-left, 2 is top-right, 3 is bottom-left, 4 is bottom-right
+        1. The image shows a rectangle divided into \(gridWidth * gridWidth) numbered cells in a \(gridWidth)x\(gridWidth) grid
+        2. Cells are numbered from 1 to \(gridWidth * gridWidth), starting from top-left, going left-to-right, then top-to-bottom
         3. Find the \(target) in the image
-        4. Determine which quadrant it primarily occupies
+        4. Determine which numbered cell it primarily occupies
+        5. Look carefully at the numbers drawn on each cell
         </instructions>
 
         <format>
-        Return only the quadrant number (1, 2, 3, or 4) that contains the \(target).
+        Return only the cell number (1 to \(gridWidth * gridWidth)) that contains the \(target).
         </format>
         """
         
-        let response = LLMAPIClient.analyzeImage(imagePath: imagePath, textPrompt: quadrantInput)
-        return Int(response.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)) ?? 1
+        let response = LLMAPIClient.analyzeImage(imagePath: imagePath, textPrompt: gridInput)
+        let cellNumber = Int(response.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)) ?? 1
+        
+        // Validate the response is within expected range
+        if cellNumber < 1 || cellNumber > gridWidth * gridWidth {
+            print("⚠️ Model returned invalid cell number \(cellNumber), defaulting to 1")
+            return 1
+        }
+        
+        return cellNumber
+    }
+    
+    /// Analyze which quadrant (1-4) contains the target (legacy function for backward compatibility)
+    static func analyzeQuadrantChoice(imagePath: String, target: String) -> Int {
+        return analyzeGridChoice(imagePath: imagePath, target: target, gridWidth: 2)
     }
     
 }
@@ -681,6 +688,133 @@ extension QuadrantManager {
         try data.write(to: URL(fileURLWithPath: outputPath))
         print("✅ Quadrant rectangle saved to \(outputPath)")
     }
+    
+    /// Draw a grid overlay with configurable grid size
+    static func drawGridOverlay(inputPath: String, outputPath: String, gridWidth: Int) throws {
+        guard let inputImage = NSImage(contentsOfFile: inputPath),
+              let cgImage = inputImage.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        else { 
+            throw NSError(domain: "QuadrantError", code: 8, 
+                         userInfo: [NSLocalizedDescriptionKey: "Could not load input image at \(inputPath)"])
+        }
+
+        let width = cgImage.width
+        let height = cgImage.height
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        
+        guard let context = CGContext(
+            data: nil, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            throw NSError(domain: "QuadrantError", code: 9,
+                         userInfo: [NSLocalizedDescriptionKey: "Could not create graphics context for grid overlay"])
+        }
+        
+        // Draw original image
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        
+        // Draw grid lines
+        context.setStrokeColor(NSColor.black.cgColor)
+        context.setLineWidth(2)
+        
+        let cellWidth = CGFloat(width) / CGFloat(gridWidth)
+        let cellHeight = CGFloat(height) / CGFloat(gridWidth)
+        
+        // Draw vertical lines
+        for i in 0...gridWidth {
+            let xPos = CGFloat(i) * cellWidth
+            context.beginPath()
+            context.move(to: CGPoint(x: xPos, y: 0))
+            context.addLine(to: CGPoint(x: xPos, y: CGFloat(height)))
+            context.strokePath()
+        }
+        
+        // Draw horizontal lines
+        for j in 0...gridWidth {
+            let yPos = CGFloat(j) * cellHeight
+            context.beginPath()
+            context.move(to: CGPoint(x: 0, y: yPos))
+            context.addLine(to: CGPoint(x: CGFloat(width), y: yPos))
+            context.strokePath()
+        }
+        
+        // Draw cell numbers
+        let fontSize: CGFloat = min(cellWidth, cellHeight) * 0.3
+        let textAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .bold),
+            .foregroundColor: NSColor.red
+        ]
+        
+        for row in 0..<gridWidth {
+            for col in 0..<gridWidth {
+                let cellNumber = row * gridWidth + col + 1
+                let centerX = (CGFloat(col) + 0.5) * cellWidth
+                // Flip the Y coordinate so cell 1 appears at top-left
+                let centerY = (CGFloat(gridWidth - 1 - row) + 0.5) * cellHeight
+                
+                let label = "\(cellNumber)" as NSString
+                NSGraphicsContext.saveGraphicsState()
+                NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+                
+                let textSize = label.size(withAttributes: textAttributes)
+                let drawPoint = CGPoint(
+                    x: centerX - textSize.width / 2,
+                    y: centerY - textSize.height / 2
+                )
+                label.draw(at: drawPoint, withAttributes: textAttributes)
+                NSGraphicsContext.restoreGraphicsState()
+            }
+        }
+        
+        guard let outputCG = context.makeImage() else {
+            throw NSError(domain: "QuadrantError", code: 10,
+                         userInfo: [NSLocalizedDescriptionKey: "Failed to create output image for grid overlay"])
+        }
+        
+        let rep = NSBitmapImageRep(cgImage: outputCG)
+        guard let data = rep.representation(using: .png, properties: [:]) else {
+            throw NSError(domain: "QuadrantError", code: 11,
+                         userInfo: [NSLocalizedDescriptionKey: "Failed to create PNG representation for grid overlay"])
+        }
+        
+        try data.write(to: URL(fileURLWithPath: outputPath))
+        print("✅ Grid overlay (\(gridWidth)x\(gridWidth)) saved to \(outputPath)")
+    }
+    
+    /// Calculate bounds for a specific grid cell
+    static func calculateGridCellBounds(topLeft: CGPoint, bottomRight: CGPoint, gridWidth: Int, cellNumber: Int) -> GridBounds? {
+        guard cellNumber >= 1 && cellNumber <= gridWidth * gridWidth else {
+            print("❌ Invalid cell number \(cellNumber) for \(gridWidth)x\(gridWidth) grid")
+            return nil
+        }
+        
+        let totalWidth = bottomRight.x - topLeft.x
+        let totalHeight = bottomRight.y - topLeft.y
+        let cellWidth = totalWidth / CGFloat(gridWidth)
+        let cellHeight = totalHeight / CGFloat(gridWidth)
+        
+        // Convert cell number to row/col (1-based to 0-based)
+        let row = (cellNumber - 1) / gridWidth
+        let col = (cellNumber - 1) % gridWidth
+        
+        print("🔍 Cell \(cellNumber) maps to row \(row), col \(col) in \(gridWidth)x\(gridWidth) grid")
+        
+        let newTopLeft = CGPoint(
+            x: topLeft.x + CGFloat(col) * cellWidth,
+            y: topLeft.y + CGFloat(row) * cellHeight
+        )
+        
+        let newBottomRight = CGPoint(
+            x: topLeft.x + CGFloat(col + 1) * cellWidth,
+            y: topLeft.y + CGFloat(row + 1) * cellHeight
+        )
+        
+        print("🔍 Calculated bounds: (\(newTopLeft.x), \(newTopLeft.y)) to (\(newBottomRight.x), \(newBottomRight.y))")
+        
+        return GridBounds(topLeft: newTopLeft, bottomRight: newBottomRight)
+    }
 }
 
 // MARK: - Automation Functions
@@ -910,16 +1044,18 @@ class UIAutomationOrchestrator {
             let topLeft = CGPoint(x: 0, y: 0)
             let bottomRight = CGPoint(x: image.size.width, y: image.size.height)
             
-            print("🔄 Starting recursive quadrant analysis...")
+            print("🔄 Starting iterative quadrant analysis...")
             print("📏 Initial bounds: (\(topLeft.x), \(topLeft.y)) to (\(bottomRight.x), \(bottomRight.y))")
             
-            // Use recursive quadrant analysis
-            guard let relativeClickPoint = LLMClient.recursiveQuadrantAnalysis(
+            // Use iterative quadrant analysis
+            guard let relativeClickPoint = LLMClient.iterativeQuadrantAnalysis(
                 topLeft: topLeft,
                 bottomRight: bottomRight,
-                target: target
+                target: target,
+                iterations: 3,
+                gridWidth: 3
             ) else {
-                print("❌ Failed to determine click coordinates through recursive analysis")
+                print("❌ Failed to determine click coordinates through iterative analysis")
                 return
             }
             
