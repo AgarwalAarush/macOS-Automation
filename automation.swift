@@ -302,6 +302,104 @@ class LLMClient {
         return QuadrantResult(quadrantNumber: sectionNum, centerPoint: centerPoint)
     }
     
+    /// Recursive quadrant analysis with 3 iterations
+    static func recursiveQuadrantAnalysis(topLeft: CGPoint, bottomRight: CGPoint, target: String, iteration: Int = 0) -> CGPoint? {
+        if iteration >= 4 {
+            let centerX = (topLeft.x + bottomRight.x) / 2
+            let centerY = (topLeft.y + bottomRight.y) / 2
+            print("🎯 Reached final iteration, returning center: (\(centerX), \(centerY))")
+            return CGPoint(x: centerX, y: centerY)
+        }
+        
+        let width = bottomRight.x - topLeft.x
+        let height = bottomRight.y - topLeft.y
+        
+        let midX = topLeft.x + width / 2
+        let midY = topLeft.y + height / 2
+        
+        let croppedImagePath = "recursive_cropped_\(iteration).png"
+        let quadrantOverlayPath = "recursive_quadrant_\(iteration).png"
+        
+        do {
+            // Crop the screenshot to the current region
+            print("✂️ Iteration \(iteration): Cropping region (\(topLeft.x), \(topLeft.y)) to (\(bottomRight.x), \(bottomRight.y))")
+            try ImageProcessor.cropImage(
+                inputPath: Config.screenshotPath,
+                outputPath: croppedImagePath,
+                centerPoint: CGPoint(x: (topLeft.x + bottomRight.x) / 2, y: (topLeft.y + bottomRight.y) / 2),
+                cropSize: Int(max(width, height))
+            )
+            
+            // Create simple 4-quadrant overlay on the cropped image
+            print("🔢 Creating 4-quadrant overlay for iteration \(iteration)...")
+            try QuadrantManager.drawQuadrantRectangle(
+                inputPath: croppedImagePath,
+                outputPath: quadrantOverlayPath
+            )
+            
+            print("🧠 Analyzing quadrant choice for iteration \(iteration)...")
+            let quadrantChoice = analyzeQuadrantChoice(imagePath: quadrantOverlayPath, target: target)
+            print("✅ Iteration \(iteration): Model chose quadrant \(quadrantChoice)")
+            
+            var newTopLeft: CGPoint
+            var newBottomRight: CGPoint
+            
+            switch quadrantChoice {
+            case 1: // Top-left
+                newTopLeft = CGPoint(x: topLeft.x, y: topLeft.y)
+                newBottomRight = CGPoint(x: midX, y: midY)
+            case 2: // Top-right
+                newTopLeft = CGPoint(x: midX, y: topLeft.y)
+                newBottomRight = CGPoint(x: bottomRight.x, y: midY)
+            case 3: // Bottom-left
+                newTopLeft = CGPoint(x: topLeft.x, y: midY)
+                newBottomRight = CGPoint(x: midX, y: bottomRight.y)
+            case 4: // Bottom-right
+                newTopLeft = CGPoint(x: midX, y: midY)
+                newBottomRight = CGPoint(x: bottomRight.x, y: bottomRight.y)
+            default:
+                print("❌ Invalid quadrant choice: \(quadrantChoice)")
+                return nil
+            }
+            
+            print("📏 Next iteration bounds: (\(newTopLeft.x), \(newTopLeft.y)) to (\(newBottomRight.x), \(newBottomRight.y))")
+            
+            return recursiveQuadrantAnalysis(
+                topLeft: newTopLeft,
+                bottomRight: newBottomRight,
+                target: target,
+                iteration: iteration + 1
+            )
+            
+        } catch {
+            print("❌ Error in recursive quadrant analysis iteration \(iteration): \(error)")
+            return nil
+        }
+    }
+    
+    /// Analyze which quadrant (1-4) contains the target
+    static func analyzeQuadrantChoice(imagePath: String, target: String) -> Int {
+        let quadrantInput = """
+        <task>
+        Look at this image with 4 numbered quadrants (1-4). Identify which quadrant contains the \(target).
+        </task>
+
+        <instructions>
+        1. The image shows a rectangle divided into 4 quadrants labeled 1, 2, 3, 4
+        2. Quadrant 1 is top-left, 2 is top-right, 3 is bottom-left, 4 is bottom-right
+        3. Find the \(target) in the image
+        4. Determine which quadrant it primarily occupies
+        </instructions>
+
+        <format>
+        Return only the quadrant number (1, 2, 3, or 4) that contains the \(target).
+        </format>
+        """
+        
+        let response = LLMAPIClient.analyzeImage(imagePath: imagePath, textPrompt: quadrantInput)
+        return Int(response.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)) ?? 1
+    }
+    
 }
 
 // MARK: - Screenshot Functions
@@ -493,6 +591,98 @@ class QuadrantManager {
     }
 }
 
+// MARK: - Quadrant Rectangle Drawing
+extension QuadrantManager {
+    
+    /// Draw a rectangle with quadrant divisions and labels
+    static func drawQuadrantRectangle(inputPath: String, outputPath: String) throws {
+        guard let inputImage = NSImage(contentsOfFile: inputPath),
+              let cgImage = inputImage.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        else { 
+            throw NSError(domain: "QuadrantError", code: 5, 
+                         userInfo: [NSLocalizedDescriptionKey: "Could not load input image at \(inputPath)"])
+        }
+
+        let width = cgImage.width
+        let height = cgImage.height
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        
+        guard let context = CGContext(
+            data: nil, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            throw NSError(domain: "QuadrantError", code: 6,
+                         userInfo: [NSLocalizedDescriptionKey: "Could not create graphics context for quadrant rectangle"])
+        }
+        
+        // Draw original image
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        
+        context.setStrokeColor(NSColor.black.cgColor)
+        context.setLineWidth(2)
+        
+        let midX = width / 2
+        let midY = height / 2
+        
+        context.beginPath()
+        context.addRect(CGRect(x: 0, y: 0, width: width, height: height))
+        context.strokePath()
+        
+        context.beginPath()
+        context.move(to: CGPoint(x: midX, y: 0))
+        context.addLine(to: CGPoint(x: midX, y: height))
+        context.strokePath()
+        
+        context.beginPath()
+        context.move(to: CGPoint(x: 0, y: midY))
+        context.addLine(to: CGPoint(x: width, y: midY))
+        context.strokePath()
+        
+        let fontSize: CGFloat = 36
+        let textAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .bold),
+            .foregroundColor: NSColor.red
+        ]
+        
+        let quadrantCenters = [
+            CGPoint(x: midX / 2, y: midY / 2),
+            CGPoint(x: midX + midX / 2, y: midY / 2),
+            CGPoint(x: midX / 2, y: midY + midY / 2),
+            CGPoint(x: midX + midX / 2, y: midY + midY / 2)
+        ]
+        
+        for (index, center) in quadrantCenters.enumerated() {
+            let label = "\(index + 1)" as NSString
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+            
+            let textSize = label.size(withAttributes: textAttributes)
+            let drawPoint = CGPoint(
+                x: center.x - textSize.width / 2,
+                y: center.y - textSize.height / 2
+            )
+            label.draw(at: drawPoint, withAttributes: textAttributes)
+            NSGraphicsContext.restoreGraphicsState()
+        }
+        
+        guard let outputCG = context.makeImage() else {
+            throw NSError(domain: "QuadrantError", code: 6,
+                         userInfo: [NSLocalizedDescriptionKey: "Failed to create output image for quadrant rectangle"])
+        }
+        
+        let rep = NSBitmapImageRep(cgImage: outputCG)
+        guard let data = rep.representation(using: .png, properties: [:]) else {
+            throw NSError(domain: "QuadrantError", code: 7,
+                         userInfo: [NSLocalizedDescriptionKey: "Failed to create PNG representation for quadrant rectangle"])
+        }
+        
+        try data.write(to: URL(fileURLWithPath: outputPath))
+        print("✅ Quadrant rectangle saved to \(outputPath)")
+    }
+}
+
 // MARK: - Automation Functions
 class AutomationManager {
     
@@ -598,6 +788,36 @@ class AutomationManager {
         }
         print("✅ Typed: \(text)")
     }
+
+    /// Get window position and bounds for an app
+    static func getWindowBounds(appName: String) -> CGRect? {
+        let opts: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+
+        guard let cfArray = CGWindowListCopyWindowInfo(opts, kCGNullWindowID) else {
+            print("❌ Unable to fetch window list for bounds")
+            return nil
+        }
+        guard let info = (cfArray as NSArray) as? [[String: Any]] else {
+            print("❌ Unexpected format for window list")
+            return nil
+        }
+
+        guard let win = info.first(where: {
+            ($0[kCGWindowOwnerName as String] as? String) == appName
+        }),
+        let boundsDict = win[kCGWindowBounds as String] as? [String: Any],
+        let x = boundsDict["X"] as? CGFloat,
+        let y = boundsDict["Y"] as? CGFloat,
+        let width = boundsDict["Width"] as? CGFloat,
+        let height = boundsDict["Height"] as? CGFloat else {
+            print("❌ No window bounds found for \(appName)")
+            return nil
+        }
+
+        let windowBounds = CGRect(x: x, y: y, width: width, height: height)
+        print("📐 Window bounds for \(appName): \(windowBounds)")
+        return windowBounds
+    }
 }
 
 // MARK: - Utility Functions
@@ -640,7 +860,8 @@ class UIAutomationOrchestrator {
             
             switch toolCall.type {
             case "click":
-                executeClickAction(toolCall)
+                // executeClickAction(toolCall)
+                executeClickActionImproved(toolCall)
             case "type":
                 executeTypeAction(toolCall)
             case "screenshot":
@@ -658,6 +879,76 @@ class UIAutomationOrchestrator {
         print("\n✅ Task execution completed!")
     }
     
+    /// Execute click action with recursive quadrant analysis
+    private static func executeClickActionImproved(_ toolCall: ToolCall) {
+        guard let target = toolCall.parameters["target"] as? String,
+              let appName = toolCall.parameters["appName"] as? String else {
+            print("❌ Invalid click parameters")
+            return
+        }
+        
+        print("🎯 Executing improved click on '\(target)' in '\(appName)'")
+        
+        // Activate the target app
+        guard AutomationManager.activateApp(named: appName) else {
+            print("❌ Failed to activate app: \(appName)")
+            return
+        }
+        usleep(300_000) // Wait for app to come to front
+        
+        do {
+            // Take full screenshot
+            print("📸 Taking full screenshot...")
+            try ScreenshotManager.captureAppWindow(appName: appName, outputPath: Config.screenshotPath)
+            
+            // Get image dimensions for initial bounds
+            guard let image = NSImage(contentsOfFile: Config.screenshotPath) else {
+                print("❌ Failed to load screenshot")
+                return
+            }
+            
+            let topLeft = CGPoint(x: 0, y: 0)
+            let bottomRight = CGPoint(x: image.size.width, y: image.size.height)
+            
+            print("🔄 Starting recursive quadrant analysis...")
+            print("📏 Initial bounds: (\(topLeft.x), \(topLeft.y)) to (\(bottomRight.x), \(bottomRight.y))")
+            
+            // Use recursive quadrant analysis
+            guard let relativeClickPoint = LLMClient.recursiveQuadrantAnalysis(
+                topLeft: topLeft,
+                bottomRight: bottomRight,
+                target: target
+            ) else {
+                print("❌ Failed to determine click coordinates through recursive analysis")
+                return
+            }
+            
+            print("📍 Relative click coordinates: (\(relativeClickPoint.x), \(relativeClickPoint.y))")
+            
+            // Get window bounds to adjust coordinates
+            guard let windowBounds = AutomationManager.getWindowBounds(appName: appName) else {
+                print("❌ Failed to get window bounds, using relative coordinates")
+                AutomationManager.click(at: relativeClickPoint)
+                return
+            }
+            
+            // Adjust coordinates to account for window position
+            let finalClickPoint = CGPoint(
+                x: windowBounds.origin.x + relativeClickPoint.x,
+                y: windowBounds.origin.y + relativeClickPoint.y
+            )
+            
+            print("🎯 Final adjusted click coordinates: (\(finalClickPoint.x), \(finalClickPoint.y))")
+            print("📐 Window offset: (\(windowBounds.origin.x), \(windowBounds.origin.y))")
+            
+            // Execute the click
+            AutomationManager.click(at: finalClickPoint)
+            
+        } catch {
+            print("❌ Error during improved click execution: \(error)")
+        }
+    }
+
     /// Execute click action with two-stage screenshot analysis
     private static func executeClickAction(_ toolCall: ToolCall) {
         guard let target = toolCall.parameters["target"] as? String,
