@@ -409,6 +409,121 @@ class LLMClient {
         return analyzeGridChoice(imagePath: imagePath, target: target, gridWidth: 2)
     }
     
+    /// Enhanced iterative quadrant analysis with configurable first iteration and padding
+    static func iterativeQuadrantAnalysisEnhanced(
+        topLeft: CGPoint, 
+        bottomRight: CGPoint, 
+        target: String, 
+        iterations: Int = 3, 
+        gridWidth: Int = 2,
+        paddingFactor: CGFloat = 2.0,
+        gridCoverageRatio: CGFloat = 0.5,
+        useEnhancedFromIteration: Int = 1
+    ) -> CGPoint? {
+        var currentTopLeft = topLeft
+        var currentBottomRight = bottomRight
+        
+        for iteration in 0..<iterations {
+            let croppedImagePath = "enhanced_cropped_\(iteration).png"
+            let quadrantOverlayPath = "enhanced_quadrant_\(iteration).png"
+            
+            do {
+                if iteration < useEnhancedFromIteration {
+                    // First iteration: Use regular grid overlay over the entire screen/region
+                    print("✂️ Standard Iteration \(iteration): Using full region (\(currentTopLeft.x), \(currentTopLeft.y)) to (\(currentBottomRight.x), \(currentBottomRight.y))")
+                    
+                    // Crop to current region (no padding for first iteration)
+                    try ImageProcessor.cropImage(
+                        inputPath: Config.screenshotPath,
+                        outputPath: croppedImagePath,
+                        centerPoint: CGPoint(x: (currentTopLeft.x + currentBottomRight.x) / 2, y: (currentTopLeft.y + currentBottomRight.y) / 2),
+                        cropSize: Int(max(currentBottomRight.x - currentTopLeft.x, currentBottomRight.y - currentTopLeft.y))
+                    )
+                    
+                    // Create regular grid overlay
+                    print("🔢 Creating standard \(gridWidth)x\(gridWidth) grid overlay for iteration \(iteration)...")
+                    try QuadrantManager.drawGridOverlay(
+                        inputPath: croppedImagePath,
+                        outputPath: quadrantOverlayPath,
+                        gridWidth: gridWidth
+                    )
+                    
+                    print("🧠 Analyzing standard grid choice for iteration \(iteration)...")
+                    let gridChoice = analyzeGridChoice(imagePath: quadrantOverlayPath, target: target, gridWidth: gridWidth)
+                    print("✅ Standard Iteration \(iteration): Model chose grid cell \(gridChoice)")
+                    
+                    // Calculate new bounds using standard coordinate mapping
+                    guard let newBounds = QuadrantManager.calculateGridCellBounds(
+                        topLeft: currentTopLeft,
+                        bottomRight: currentBottomRight,
+                        gridWidth: gridWidth,
+                        cellNumber: gridChoice
+                    ) else {
+                        print("❌ Failed to calculate standard bounds for cell \(gridChoice)")
+                        return nil
+                    }
+                    
+                    currentTopLeft = newBounds.topLeft
+                    currentBottomRight = newBounds.bottomRight
+                    
+                } else {
+                    // Enhanced iterations: Use padding and contextual grid
+                    print("✂️ Enhanced Iteration \(iteration): Cropping with padding around region (\(currentTopLeft.x), \(currentTopLeft.y)) to (\(currentBottomRight.x), \(currentBottomRight.y))")
+                    
+                    let actualCropBounds = try ImageProcessor.cropImageWithPadding(
+                        inputPath: Config.screenshotPath,
+                        outputPath: croppedImagePath,
+                        targetTopLeft: currentTopLeft,
+                        targetBottomRight: currentBottomRight,
+                        paddingFactor: paddingFactor
+                    )
+                    
+                    // Create enhanced grid overlay with boundary box
+                    print("🔢 Creating enhanced \(gridWidth)x\(gridWidth) grid overlay for iteration \(iteration) (coverage: \(gridCoverageRatio))...")
+                    try QuadrantManager.drawEnhancedGridOverlay(
+                        inputPath: croppedImagePath,
+                        outputPath: quadrantOverlayPath,
+                        gridWidth: gridWidth,
+                        paddingFactor: paddingFactor,
+                        gridCoverageRatio: gridCoverageRatio,
+                        originalTargetBounds: CGRect(x: currentTopLeft.x, y: currentTopLeft.y, width: currentBottomRight.x - currentTopLeft.x, height: currentBottomRight.y - currentTopLeft.y),
+                        actualCropBounds: actualCropBounds
+                    )
+                    
+                    print("🧠 Analyzing enhanced grid choice for iteration \(iteration)...")
+                    let gridChoice = analyzeGridChoice(imagePath: quadrantOverlayPath, target: target, gridWidth: gridWidth)
+                    print("✅ Enhanced Iteration \(iteration): Model chose grid cell \(gridChoice)")
+                    
+                    // Calculate new bounds using enhanced coordinate mapping with actual crop bounds
+                    guard let newBounds = QuadrantManager.calculateEnhancedGridCellBoundsFromCrop(
+                        actualCropBounds: actualCropBounds,
+                        gridWidth: gridWidth,
+                        cellNumber: gridChoice,
+                        gridCoverageRatio: gridCoverageRatio
+                    ) else {
+                        print("❌ Failed to calculate enhanced bounds for cell \(gridChoice)")
+                        return nil
+                    }
+                    
+                    currentTopLeft = newBounds.topLeft
+                    currentBottomRight = newBounds.bottomRight
+                }
+                
+                print("📏 Next iteration bounds: (\(currentTopLeft.x), \(currentTopLeft.y)) to (\(currentBottomRight.x), \(currentBottomRight.y))")
+                
+            } catch {
+                print("❌ Error in enhanced iterative analysis iteration \(iteration): \(error)")
+                return nil
+            }
+        }
+        
+        // Return center of final region
+        let centerX = (currentTopLeft.x + currentBottomRight.x) / 2
+        let centerY = (currentTopLeft.y + currentBottomRight.y) / 2
+        print("🎯 Enhanced analysis complete, returning center: (\(centerX), \(centerY))")
+        return CGPoint(x: centerX, y: centerY)
+    }
+    
 }
 
 // MARK: - Screenshot Functions
@@ -493,6 +608,115 @@ class ImageProcessor {
 
         try pngData.write(to: URL(fileURLWithPath: outputPath))
         print("✅ Cropped image saved to \(outputPath)")
+    }
+    
+    /// Crop image with padding around target region for enhanced context
+    static func cropImageWithPadding(inputPath: String, outputPath: String, targetTopLeft: CGPoint, targetBottomRight: CGPoint, paddingFactor: CGFloat = 2.0) throws -> CGRect {
+        guard let srcImage = NSImage(contentsOfFile: inputPath) else {
+            throw NSError(domain: "ImageError", code: 5,
+                         userInfo: [NSLocalizedDescriptionKey: "Could not load image at \(inputPath)"])
+        }
+
+        guard let cg = srcImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            throw NSError(domain: "ImageError", code: 6,
+                         userInfo: [NSLocalizedDescriptionKey: "Could not get CGImage from NSImage"])
+        }
+
+        // Calculate target region dimensions
+        let targetWidth = targetBottomRight.x - targetTopLeft.x
+        let targetHeight = targetBottomRight.y - targetTopLeft.y
+        
+        // Calculate desired padded crop dimensions
+        let desiredPaddedWidth = targetWidth * paddingFactor
+        let desiredPaddedHeight = targetHeight * paddingFactor
+        
+        // Calculate target center
+        let targetCenterX = (targetTopLeft.x + targetBottomRight.x) / 2
+        let targetCenterY = (targetTopLeft.y + targetBottomRight.y) / 2
+        
+        // Calculate ideal padded crop rectangle (may extend beyond image bounds)
+        let idealLeft = targetCenterX - desiredPaddedWidth / 2
+        let idealTop = targetCenterY - desiredPaddedHeight / 2
+        let idealRight = targetCenterX + desiredPaddedWidth / 2
+        let idealBottom = targetCenterY + desiredPaddedHeight / 2
+        
+        // Image bounds
+        let imageWidth = CGFloat(cg.width)
+        let imageHeight = CGFloat(cg.height)
+        
+        // Calculate actual crop bounds considering all edge cases
+        var actualLeft = idealLeft
+        var actualTop = idealTop
+        var actualRight = idealRight
+        var actualBottom = idealBottom
+        
+        // Handle left edge: if ideal left < 0, shift the entire crop right
+        if idealLeft < 0 {
+            let leftShift = -idealLeft
+            actualLeft = 0
+            actualRight = min(imageWidth, idealRight + leftShift)
+        }
+        
+        // Handle right edge: if ideal right > imageWidth, shift the entire crop left
+        if idealRight > imageWidth {
+            let rightShift = idealRight - imageWidth
+            actualRight = imageWidth
+            actualLeft = max(0, idealLeft - rightShift)
+        }
+        
+        // Handle top edge: if ideal top < 0, shift the entire crop down
+        if idealTop < 0 {
+            let topShift = -idealTop
+            actualTop = 0
+            actualBottom = min(imageHeight, idealBottom + topShift)
+        }
+        
+        // Handle bottom edge: if ideal bottom > imageHeight, shift the entire crop up
+        if idealBottom > imageHeight {
+            let bottomShift = idealBottom - imageHeight
+            actualBottom = imageHeight
+            actualTop = max(0, idealTop - bottomShift)
+        }
+        
+        // Handle corner cases: ensure we don't exceed image bounds after shifting
+        actualLeft = max(0, actualLeft)
+        actualTop = max(0, actualTop)
+        actualRight = min(imageWidth, actualRight)
+        actualBottom = min(imageHeight, actualBottom)
+        
+        // Final crop rectangle
+        let finalCropRect = CGRect(
+            x: actualLeft,
+            y: actualTop,
+            width: actualRight - actualLeft,
+            height: actualBottom - actualTop
+        )
+        
+        print("🔍 Edge handling:")
+        print("   Ideal bounds: (\(idealLeft), \(idealTop)) to (\(idealRight), \(idealBottom))")
+        print("   Actual bounds: (\(actualLeft), \(actualTop)) to (\(actualRight), \(actualBottom))")
+        print("   Final crop: (\(finalCropRect.origin.x), \(finalCropRect.origin.y)) size (\(finalCropRect.width), \(finalCropRect.height))")
+
+        guard let croppedCG = cg.cropping(to: finalCropRect) else {
+            throw NSError(domain: "ImageError", code: 7,
+                         userInfo: [NSLocalizedDescriptionKey: "Enhanced cropping failed"])
+        }
+
+        let croppedImage = NSImage(cgImage: croppedCG, size: finalCropRect.size)
+
+        guard let tiffData = croppedImage.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiffData),
+              let pngData = bitmap.representation(using: .png, properties: [:]) else {
+            throw NSError(domain: "ImageError", code: 8,
+                         userInfo: [NSLocalizedDescriptionKey: "Failed to encode enhanced cropped image as PNG"])
+        }
+
+        try pngData.write(to: URL(fileURLWithPath: outputPath))
+        print("✅ Enhanced cropped image with padding saved to \(outputPath)")
+        print("📐 Target region: (\(targetTopLeft.x), \(targetTopLeft.y)) to (\(targetBottomRight.x), \(targetBottomRight.y))")
+        print("📐 Padded crop: (\(finalCropRect.origin.x), \(finalCropRect.origin.y)) size (\(finalCropRect.width), \(finalCropRect.height))")
+        
+        return finalCropRect
     }
 }
 
@@ -817,6 +1041,281 @@ extension QuadrantManager {
         
         return GridBounds(topLeft: newTopLeft, bottomRight: newBottomRight)
     }
+    
+    /// Draw enhanced grid overlay with boundary box and padding context
+    static func drawEnhancedGridOverlay(inputPath: String, outputPath: String, gridWidth: Int, paddingFactor: CGFloat = 2.0, gridCoverageRatio: CGFloat = 0.5, originalTargetBounds: CGRect? = nil, actualCropBounds: CGRect? = nil) throws {
+        guard let inputImage = NSImage(contentsOfFile: inputPath),
+              let cgImage = inputImage.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        else { 
+            throw NSError(domain: "QuadrantError", code: 12, 
+                         userInfo: [NSLocalizedDescriptionKey: "Could not load input image at \(inputPath)"])
+        }
+
+        let width = cgImage.width
+        let height = cgImage.height
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        
+        guard let context = CGContext(
+            data: nil, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            throw NSError(domain: "QuadrantError", code: 13,
+                         userInfo: [NSLocalizedDescriptionKey: "Could not create graphics context for enhanced grid overlay"])
+        }
+        
+        // Draw original image
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        
+        // Calculate the actual grid area based on coverage ratio and edge positioning
+        let gridAreaWidth = CGFloat(width) * gridCoverageRatio
+        let gridAreaHeight = CGFloat(height) * gridCoverageRatio
+        
+        var gridAreaX: CGFloat
+        var gridAreaY: CGFloat
+        
+        // If we have target and crop bounds info, use smart positioning
+        if let originalTarget = originalTargetBounds, let actualCrop = actualCropBounds {
+            let smartGridRect = calculateEnhancedGridOverlayPosition(
+                originalTargetBounds: originalTarget,
+                actualCropBounds: actualCrop,
+                gridCoverageRatio: gridCoverageRatio
+            )
+            gridAreaX = smartGridRect.origin.x
+            gridAreaY = smartGridRect.origin.y
+            print("🔍 Using smart grid positioning: (\(gridAreaX), \(gridAreaY))")
+        } else {
+            // Fallback to center positioning
+            gridAreaX = (CGFloat(width) - gridAreaWidth) / 2
+            gridAreaY = (CGFloat(height) - gridAreaHeight) / 2
+            print("🔍 Using center grid positioning: (\(gridAreaX), \(gridAreaY))")
+        }
+        
+        let gridAreaRect = CGRect(x: gridAreaX, y: gridAreaY, width: gridAreaWidth, height: gridAreaHeight)
+        
+        // Draw boundary box around the grid area
+        context.setStrokeColor(NSColor.blue.cgColor)
+        context.setLineWidth(4)
+        context.beginPath()
+        context.addRect(gridAreaRect)
+        context.strokePath()
+        
+        // Draw grid lines within the grid area only
+        context.setStrokeColor(NSColor.black.cgColor)
+        context.setLineWidth(2)
+        
+        let cellWidth = gridAreaWidth / CGFloat(gridWidth)
+        let cellHeight = gridAreaHeight / CGFloat(gridWidth)
+        
+        // Draw vertical lines within grid area
+        for i in 0...gridWidth {
+            let xPos = gridAreaX + CGFloat(i) * cellWidth
+            context.beginPath()
+            context.move(to: CGPoint(x: xPos, y: gridAreaY))
+            context.addLine(to: CGPoint(x: xPos, y: gridAreaY + gridAreaHeight))
+            context.strokePath()
+        }
+        
+        // Draw horizontal lines within grid area
+        for j in 0...gridWidth {
+            let yPos = gridAreaY + CGFloat(j) * cellHeight
+            context.beginPath()
+            context.move(to: CGPoint(x: gridAreaX, y: yPos))
+            context.addLine(to: CGPoint(x: gridAreaX + gridAreaWidth, y: yPos))
+            context.strokePath()
+        }
+        
+        // Draw cell numbers within the grid area
+        let fontSize: CGFloat = min(cellWidth, cellHeight) * 0.3
+        let textAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .bold),
+            .foregroundColor: NSColor.red
+        ]
+        
+        for row in 0..<gridWidth {
+            for col in 0..<gridWidth {
+                let cellNumber = row * gridWidth + col + 1
+                let centerX = gridAreaX + (CGFloat(col) + 0.5) * cellWidth
+                // Flip the Y coordinate so cell 1 appears at top-left
+                let centerY = gridAreaY + (CGFloat(gridWidth - 1 - row) + 0.5) * cellHeight
+                
+                let label = "\(cellNumber)" as NSString
+                NSGraphicsContext.saveGraphicsState()
+                NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+                
+                let textSize = label.size(withAttributes: textAttributes)
+                let drawPoint = CGPoint(
+                    x: centerX - textSize.width / 2,
+                    y: centerY - textSize.height / 2
+                )
+                label.draw(at: drawPoint, withAttributes: textAttributes)
+                NSGraphicsContext.restoreGraphicsState()
+            }
+        }
+        
+        guard let outputCG = context.makeImage() else {
+            throw NSError(domain: "QuadrantError", code: 14,
+                         userInfo: [NSLocalizedDescriptionKey: "Failed to create output image for enhanced grid overlay"])
+        }
+        
+        let rep = NSBitmapImageRep(cgImage: outputCG)
+        guard let data = rep.representation(using: .png, properties: [:]) else {
+            throw NSError(domain: "QuadrantError", code: 15,
+                         userInfo: [NSLocalizedDescriptionKey: "Failed to create PNG representation for enhanced grid overlay"])
+        }
+        
+        try data.write(to: URL(fileURLWithPath: outputPath))
+        print("✅ Enhanced grid overlay (\(gridWidth)x\(gridWidth)) with boundary saved to \(outputPath)")
+        print("📐 Grid area: (\(gridAreaX), \(gridAreaY)) size (\(gridAreaWidth), \(gridAreaHeight))")
+    }
+    
+    /// Calculate bounds for enhanced grid cell with proper padding offset and edge handling
+    static func calculateEnhancedGridCellBounds(
+        originalTopLeft: CGPoint, 
+        originalBottomRight: CGPoint, 
+        gridWidth: Int, 
+        cellNumber: Int, 
+        paddingFactor: CGFloat = 2.0,
+        gridCoverageRatio: CGFloat = 0.5,
+        screenBounds: CGRect
+    ) -> GridBounds? {
+        guard cellNumber >= 1 && cellNumber <= gridWidth * gridWidth else {
+            print("❌ Invalid cell number \(cellNumber) for \(gridWidth)x\(gridWidth) enhanced grid")
+            return nil
+        }
+        
+        // Original target region dimensions
+        let originalWidth = originalBottomRight.x - originalTopLeft.x
+        let originalHeight = originalBottomRight.y - originalTopLeft.y
+        let originalCenterX = (originalTopLeft.x + originalBottomRight.x) / 2
+        let originalCenterY = (originalTopLeft.y + originalBottomRight.y) / 2
+        
+        // Calculate desired padded crop dimensions
+        let desiredPaddedWidth = originalWidth * paddingFactor
+        let desiredPaddedHeight = originalHeight * paddingFactor
+        
+        // Calculate actual crop bounds considering screen edges
+        let actualCropLeft = max(0, originalCenterX - desiredPaddedWidth / 2)
+        let actualCropTop = max(0, originalCenterY - desiredPaddedHeight / 2)
+        let actualCropRight = min(screenBounds.width, originalCenterX + desiredPaddedWidth / 2)
+        let actualCropBottom = min(screenBounds.height, originalCenterY + desiredPaddedHeight / 2)
+        
+        let actualCropWidth = actualCropRight - actualCropLeft
+        let actualCropHeight = actualCropBottom - actualCropTop
+        
+        // Calculate where the grid area appears within the actual crop
+        let gridAreaWidth = actualCropWidth * gridCoverageRatio
+        let gridAreaHeight = actualCropHeight * gridCoverageRatio
+        let gridAreaLeft = actualCropLeft + (actualCropWidth - gridAreaWidth) / 2
+        let gridAreaTop = actualCropTop + (actualCropHeight - gridAreaHeight) / 2
+        
+        // Calculate cell dimensions within the grid area
+        let cellWidth = gridAreaWidth / CGFloat(gridWidth)
+        let cellHeight = gridAreaHeight / CGFloat(gridWidth)
+        
+        // Convert cell number to row/col (1-based to 0-based)
+        let row = (cellNumber - 1) / gridWidth
+        let col = (cellNumber - 1) % gridWidth
+        
+        print("🔍 Enhanced cell \(cellNumber) maps to row \(row), col \(col) in \(gridWidth)x\(gridWidth) grid")
+        print("🔍 Grid area in screen coords: (\(gridAreaLeft), \(gridAreaTop)) size (\(gridAreaWidth), \(gridAreaHeight))")
+        
+        // Calculate new bounds within the grid area (in screen coordinates)
+        let newTopLeft = CGPoint(
+            x: gridAreaLeft + CGFloat(col) * cellWidth,
+            y: gridAreaTop + CGFloat(row) * cellHeight
+        )
+        
+        let newBottomRight = CGPoint(
+            x: gridAreaLeft + CGFloat(col + 1) * cellWidth,
+            y: gridAreaTop + CGFloat(row + 1) * cellHeight
+        )
+        
+        print("🔍 Enhanced calculated bounds: (\(newTopLeft.x), \(newTopLeft.y)) to (\(newBottomRight.x), \(newBottomRight.y))")
+        
+        return GridBounds(topLeft: newTopLeft, bottomRight: newBottomRight)
+    }
+    
+    /// Calculate bounds for enhanced grid cell using actual crop bounds with edge case handling
+    static func calculateEnhancedGridCellBoundsFromCrop(
+        actualCropBounds: CGRect,
+        gridWidth: Int,
+        cellNumber: Int,
+        gridCoverageRatio: CGFloat = 0.5
+    ) -> GridBounds? {
+        guard cellNumber >= 1 && cellNumber <= gridWidth * gridWidth else {
+            print("❌ Invalid cell number \(cellNumber) for \(gridWidth)x\(gridWidth) enhanced grid")
+            return nil
+        }
+        
+        // Calculate where the grid area appears within the actual crop (in screen coordinates)
+        let gridAreaWidth = actualCropBounds.width * gridCoverageRatio
+        let gridAreaHeight = actualCropBounds.height * gridCoverageRatio
+        let gridAreaLeft = actualCropBounds.origin.x + (actualCropBounds.width - gridAreaWidth) / 2
+        let gridAreaTop = actualCropBounds.origin.y + (actualCropBounds.height - gridAreaHeight) / 2
+        
+        // Calculate cell dimensions within the grid area
+        let cellWidth = gridAreaWidth / CGFloat(gridWidth)
+        let cellHeight = gridAreaHeight / CGFloat(gridWidth)
+        
+        // Convert cell number to row/col (1-based to 0-based)
+        let row = (cellNumber - 1) / gridWidth
+        let col = (cellNumber - 1) % gridWidth
+        
+        print("🔍 Enhanced cell \(cellNumber) maps to row \(row), col \(col) in \(gridWidth)x\(gridWidth) grid")
+        print("🔍 Actual crop bounds: (\(actualCropBounds.origin.x), \(actualCropBounds.origin.y)) size (\(actualCropBounds.width), \(actualCropBounds.height))")
+        print("🔍 Grid area in screen coords: (\(gridAreaLeft), \(gridAreaTop)) size (\(gridAreaWidth), \(gridAreaHeight))")
+        
+        // Calculate new bounds within the grid area (in screen coordinates)
+        let newTopLeft = CGPoint(
+            x: gridAreaLeft + CGFloat(col) * cellWidth,
+            y: gridAreaTop + CGFloat(row) * cellHeight
+        )
+        
+        let newBottomRight = CGPoint(
+            x: gridAreaLeft + CGFloat(col + 1) * cellWidth,
+            y: gridAreaTop + CGFloat(row + 1) * cellHeight
+        )
+        
+        print("🔍 Enhanced calculated bounds: (\(newTopLeft.x), \(newTopLeft.y)) to (\(newBottomRight.x), \(newBottomRight.y))")
+        
+        return GridBounds(topLeft: newTopLeft, bottomRight: newBottomRight)
+    }
+    
+    /// Calculate enhanced grid overlay position accounting for edge-shifted crops
+    static func calculateEnhancedGridOverlayPosition(
+        originalTargetBounds: CGRect,
+        actualCropBounds: CGRect,
+        gridCoverageRatio: CGFloat = 0.5
+    ) -> CGRect {
+        // Calculate where the original target region appears within the actual crop
+        let originalCenterX = originalTargetBounds.midX
+        let originalCenterY = originalTargetBounds.midY
+        
+        // Find where this center appears in the crop coordinate system
+        let centerInCropX = originalCenterX - actualCropBounds.origin.x
+        let centerInCropY = originalCenterY - actualCropBounds.origin.y
+        
+        // Calculate grid area dimensions
+        let gridAreaWidth = actualCropBounds.width * gridCoverageRatio
+        let gridAreaHeight = actualCropBounds.height * gridCoverageRatio
+        
+        // Position grid area to keep the original target centered (if possible)
+        let idealGridLeft = centerInCropX - gridAreaWidth / 2
+        let idealGridTop = centerInCropY - gridAreaHeight / 2
+        
+        // Constrain to crop bounds
+        let actualGridLeft = max(0, min(actualCropBounds.width - gridAreaWidth, idealGridLeft))
+        let actualGridTop = max(0, min(actualCropBounds.height - gridAreaHeight, idealGridTop))
+        
+        return CGRect(
+            x: actualGridLeft,
+            y: actualGridTop,
+            width: gridAreaWidth,
+            height: gridAreaHeight
+        )
+    }
 }
 
 // MARK: - Automation Functions
@@ -996,8 +1495,8 @@ class UIAutomationOrchestrator {
             
             switch toolCall.type {
             case "click":
-                // executeClickAction(toolCall)
-                executeClickActionImproved(toolCall)
+                // executeClickActionImproved(toolCall)
+                executeClickActionEnhanced(toolCall)
             case "type":
                 executeTypeAction(toolCall)
             case "screenshot":
@@ -1092,6 +1591,89 @@ class UIAutomationOrchestrator {
             
         } catch {
             print("❌ Error during improved click execution: \(error)")
+        }
+    }
+
+    /// Execute enhanced click action with contextual padding
+    private static func executeClickActionEnhanced(_ toolCall: ToolCall) {
+        guard let target = toolCall.parameters["target"] as? String,
+              let appName = toolCall.parameters["appName"] as? String else {
+            print("❌ Invalid click parameters")
+            return
+        }
+        
+        print("🎯 Executing enhanced click on '\(target)' in '\(appName)'")
+        
+        // Activate the target app
+        guard AutomationManager.activateApp(named: appName) else {
+            print("❌ Failed to activate app: \(appName)")
+            return
+        }
+        usleep(300_000) // Wait for app to come to front
+        
+        do {
+            // Take full screenshot
+            print("📸 Taking full screenshot...")
+            try ScreenshotManager.captureAppWindow(appName: appName, outputPath: Config.screenshotPath)
+            
+            // Get image dimensions for initial bounds
+            guard let image = NSImage(contentsOfFile: Config.screenshotPath) else {
+                print("❌ Failed to load screenshot")
+                return
+            }
+            
+            let topLeft = CGPoint(x: 0, y: 0)
+            let bottomRight = CGPoint(x: image.size.width, y: image.size.height)
+            
+            print("🔄 Starting enhanced iterative quadrant analysis...")
+            print("📏 Initial bounds: (\(topLeft.x), \(topLeft.y)) to (\(bottomRight.x), \(bottomRight.y))")
+            
+            // Use enhanced iterative quadrant analysis
+            guard let relativeClickPoint = LLMClient.iterativeQuadrantAnalysisEnhanced(
+                topLeft: topLeft,
+                bottomRight: bottomRight,
+                target: target,
+                iterations: 3,
+                gridWidth: 2,
+                paddingFactor: 2.0,
+                gridCoverageRatio: 0.5,
+                useEnhancedFromIteration: 1
+            ) else {
+                print("❌ Failed to determine click coordinates through enhanced analysis")
+                return
+            }
+            
+            print("📍 Enhanced relative click coordinates: (\(relativeClickPoint.x), \(relativeClickPoint.y))")
+            
+            // Get window bounds to adjust coordinates
+            guard let windowBounds = AutomationManager.getWindowBounds(appName: appName) else {
+                print("❌ Failed to get window bounds, using relative coordinates")
+                AutomationManager.click(at: relativeClickPoint)
+                return
+            }
+            
+            // Calculate scaling factors for each dimension
+            let scaleX = image.size.width / windowBounds.width
+            let scaleY = image.size.height / windowBounds.height
+            
+            print("📐 Image size: \(image.size.width) × \(image.size.height)")
+            print("📐 Window size: \(windowBounds.width) × \(windowBounds.height)")
+            print("📐 Scale factors: X=\(scaleX), Y=\(scaleY)")
+            
+            // Adjust coordinates: scale down by dimension-specific factors, then add window offset
+            let finalClickPoint = CGPoint(
+                x: windowBounds.origin.x + (relativeClickPoint.x / scaleX),
+                y: windowBounds.origin.y + (relativeClickPoint.y / scaleY)
+            )
+            
+            print("🎯 Final enhanced click coordinates: (\(finalClickPoint.x), \(finalClickPoint.y))")
+            print("📐 Window offset: (\(windowBounds.origin.x), \(windowBounds.origin.y))")
+            
+            // Execute the click
+            AutomationManager.click(at: finalClickPoint)
+            
+        } catch {
+            print("❌ Error during enhanced click execution: \(error)")
         }
     }
 
@@ -1248,7 +1830,7 @@ func main() {
     
     // let task = args[1]
 
-    let task = "enter '1+1=?\n' into Claude" // Example task, replace with actual input
+    let task = "enter 'What is a CNN?\n' into Claude" // Example task, replace with actual input
     print("🔍 Analyzing task: \(task)")
     UIAutomationOrchestrator.executeTask(task)
     // _ = AutomationManager.activateApp(named: "Claude")
